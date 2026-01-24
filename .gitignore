@@ -65,3 +65,4 @@ Thumbs.db
 # Config (contains API keys)
 config.yaml
 config.example.yaml
+config.yaml
