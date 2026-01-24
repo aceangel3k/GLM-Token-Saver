@@ -7,8 +7,23 @@ import logging
 from logging.handlers import RotatingFileHandler
 import os
 import json
+import sys
+import importlib.util
 from router import SmartRouter
 from config import get_config
+
+# Import custom statistics module (avoid name conflict with Python's built-in statistics)
+spec = importlib.util.spec_from_file_location(
+    "api_statistics",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "statistics.py"),
+)
+if spec is not None and spec.loader is not None:
+    api_statistics = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(api_statistics)
+    get_stats = api_statistics.get_stats
+    StatisticsTracker = api_statistics.StatisticsTracker
+else:
+    raise ImportError("Failed to load statistics module")
 
 
 # Setup logging
@@ -74,7 +89,7 @@ app.add_middleware(
 )
 
 # Initialize router
-router = SmartRouter()
+router = SmartRouter(get_stats)
 
 
 # Pydantic models for OpenAI-compatible API
@@ -378,7 +393,8 @@ async def chat_completions(request: Request):
         # Extract response data
         choices = response.get("choices", [])
         usage = response.get("usage", {})
-        routing_model = response.get("model_used", "unknown")
+        model_used = response.get("model_used", "unknown")
+        speculative_decoding = response.get("speculative_decoding", None)
 
         # Validate response structure
         if not choices:
@@ -489,7 +505,7 @@ async def chat_completions(request: Request):
             validated_choices.append(validated_choice)
 
         logger.info(f"=== RESPONSE PROCESSING ===")
-        logger.info(f"Model used: {routing_model}")
+        logger.info(f"Model used: {model_used}")
         logger.info(f"Choices before cleaning: {len(choices)}")
         logger.info(f"Choices after validation: {len(validated_choices)}")
         for i, choice in enumerate(validated_choices):
@@ -509,10 +525,15 @@ async def chat_completions(request: Request):
             "model": response.get("model", "glm-4.7"),
             "choices": validated_choices,
             "usage": cleaned_usage,
+            "model_used": model_used,
         }
 
-        # Remove any non-OpenAI fields that might be in the original response
-        for field in ["routing_model", "model_used", "reasoning_content"]:
+        # Add speculative_decoding stats if available
+        if speculative_decoding:
+            response_data["speculative_decoding"] = speculative_decoding
+
+        # Remove non-OpenAI fields, but keep model_used and speculative_decoding for debugging
+        for field in ["routing_model", "reasoning_content"]:
             if field in response_data:
                 del response_data[field]
 
@@ -537,16 +558,18 @@ async def chat_completions(request: Request):
 
 
 @app.get("/stats")
-async def get_stats():
+async def get_statistics():
     """Get usage statistics."""
-    return {
-        "message": "Statistics endpoint - to be implemented with token tracking",
-        "features": {
-            "smart_routing": True,
-            "speculative_decoding": get_config().speculative_decoding.enabled,
-            "cost_tracking": True,
-        },
-    }
+    stats = get_stats()
+    return stats.get_statistics()
+
+
+@app.post("/stats/reset")
+async def reset_statistics():
+    """Reset all statistics."""
+    stats = get_stats()
+    stats.reset()
+    return {"message": "Statistics reset successfully"}
 
 
 if __name__ == "__main__":
@@ -567,16 +590,6 @@ if __name__ == "__main__":
     logger.warning(f"Cerebras endpoint: {config.models['cerebras'].endpoint}")
     logger.warning(f"Speculative decoding: {config.speculative_decoding.enabled}")
     logger.warning(f"========================================")
-
-    uvicorn.run(
-        "main:app",
-        host=config.server.host,
-        port=config.server.port,
-        log_level=config.server.log_level,
-    )
-    logger.debug(f"Routing strategy: {config.routing.strategy}")
-    logger.debug(f"Local model: {config.models['local'].name}")
-    logger.debug(f"Cerebras model: {config.models['cerebras'].name}")
 
     uvicorn.run(
         "main:app",
