@@ -34,8 +34,8 @@ Speculative decoding is an optimization technique that dramatically speeds up LL
 
 ### In This Project
 
-- **Draft Model**: Local GLM-4.7-Flash (free, fast, runs on your hardware)
-- **Target Model**: Cerebras GLM 4.7 (paid, slower, more capable)
+- **Draft Model**: Local GLM-4.7-Flash (free, fast enough, runs on your hardware)
+- **Target Model**: Cerebras GLM 4.7 (paid, much faster, more capable)
 - **Process**:
   - Generate draft locally (free)
   - Verify with Cerebras (paid, only when needed)
@@ -103,14 +103,14 @@ Edit `config.yaml` to customize:
 models:
   local:
     enabled: true
-    endpoint: "http://spark0.tail1f104f.ts.net:41447/v1/chat/completions"
+    endpoint: "http://<your-local-api-server-ip>:41447/v1/chat/completions"
     model: "unsloth_GLM-4.7-Flash-GGUF_GLM-4.7-Flash-Q4_K_M"
   
   cerebras:
     enabled: true
     endpoint: "https://api.cerebras.ai/v1/chat/completions"
     api_key: "your-api-key"
-    model: "glm-4.7-355b"
+    model: "zai-glm-4.7"
 
 routing:
   strategy: "smart_routing"  # Options: smart_routing, speculative_decoding, always_local, always_cerebras
