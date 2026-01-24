@@ -22,6 +22,9 @@ In Cline's settings, configure the following:
 ```
 http://localhost:8000/v1
 ```
+**Note:** The API supports both `/v1` and non-`/v1` prefixes. You can use either:
+- `http://localhost:8000/v1` (recommended, OpenAI-compatible)
+- `http://localhost:8000` (also works)
 
 #### API Key
 ```

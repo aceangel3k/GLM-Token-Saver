@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 class BaseModelClient(ABC):
     """Base class for model clients."""
-    
+
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.endpoint = config["endpoint"]
@@ -16,33 +16,31 @@ class BaseModelClient(ABC):
         self.model_name = config["model"]
         self.max_tokens = config.get("max_tokens", 4096)
         self.timeout = config.get("timeout", 120)
-        
+
     @abstractmethod
     async def chat_completion(
         self,
         messages: list[Dict[str, str]],
-        temperature: float = 0.7,
+        temperature: float = 0.9,
         max_tokens: Optional[int] = None,
-        **kwargs
+        **kwargs,
     ) -> Dict[str, Any]:
         """Send chat completion request to the model."""
         pass
-    
+
     def _get_headers(self) -> Dict[str, str]:
         """Get request headers."""
-        headers = {
-            "Content-Type": "application/json"
-        }
+        headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
-    
+
     def _build_payload(
         self,
         messages: list[Dict[str, str]],
         temperature: float,
         max_tokens: Optional[int],
-        **kwargs
+        **kwargs,
     ) -> Dict[str, Any]:
         """Build request payload."""
         payload = {
@@ -53,22 +51,25 @@ class BaseModelClient(ABC):
         }
         payload.update(kwargs)
         return payload
-    
+
     async def _make_request(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Make HTTP request to the model endpoint."""
         headers = self._get_headers()
-        
+
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             try:
+                logger.info(f"Making HTTP request to: {self.endpoint}")
                 response = await client.post(
-                    self.endpoint,
-                    headers=headers,
-                    json=payload
+                    self.endpoint, headers=headers, json=payload
                 )
                 response.raise_for_status()
+                logger.info(f"HTTP request successful: {response.status_code}")
                 return response.json()
             except httpx.HTTPStatusError as e:
                 logger.error(f"HTTP error from {self.model_name}: {e}")
+                logger.error(
+                    f"Response body: {e.response.text if e.response else 'No response body'}"
+                )
                 raise
             except httpx.RequestError as e:
                 logger.error(f"Request error to {self.model_name}: {e}")

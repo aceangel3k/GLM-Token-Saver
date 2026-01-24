@@ -104,7 +104,7 @@ OpenAI-compatible chat completions endpoint.
   "messages": [
     {"role": "user", "content": "Hello, how are you?"}
   ],
-  "temperature": 0.7,
+  "temperature": 0.9,
   "max_tokens": 1000
 }
 ```

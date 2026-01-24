@@ -36,14 +36,32 @@ ENV/
 # Logs
 logs/
 *.log
+*.log.*
+
+# Test files
+test_*.py
+*_test.py
 
 # Environment variables
 .env
 .env.local
 
+# Temporary documentation files
+ERROR_FIXES_SUMMARY.md
+FALLBACK_FIX_SUMMARY.md
+LOGGING_FIX_SUMMARY.md
+MULTIMODAL_FIX_SUMMARY.md
+TYPE_ERROR_FIX_SUMMARY.md
+TYPE_ERROR_FIX.md
+
 # OS
 .DS_Store
 Thumbs.db
 
+# Fix summary files
+*FIX_SUMMARY.md
+*FIX.md
+
 # Config (contains API keys)
-# config.yaml  # Uncomment if you want to keep config out of git
+config.yaml
+config.example.yaml
