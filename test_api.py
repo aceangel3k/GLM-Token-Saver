@@ -30,7 +30,7 @@ async def test_chat_completion_simple():
             "messages": [
                 {"role": "user", "content": "Hello, how are you?"}
             ],
-            "temperature": 0.7,
+            "temperature": 0.9,
             "max_tokens": 100
         }
         response = await client.post(
@@ -52,7 +52,7 @@ async def test_chat_completion_complex():
             "messages": [
                 {"role": "user", "content": "Write a Python function to implement a binary search algorithm with proper error handling and documentation."}
             ],
-            "temperature": 0.7,
+            "temperature": 0.9,
             "max_tokens": 500
         }
         response = await client.post(
