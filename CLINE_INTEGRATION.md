@@ -38,7 +38,7 @@ Leave blank for auto-routing
 ```
 Or specify one of:
 - `unsloth_GLM-4.7-Flash-GGUF_GLM-4.7-Flash-Q4_K_M` (local model)
-- `glm-4.7-355b` (Cerebras model)
+- `zai-glm-4.7` (Cerebras model)
 
 ## How It Works
 
