@@ -9,7 +9,7 @@ pip install -r requirements.txt
 ## 2. Verify Configuration
 
 Check that `config.yaml` has your correct endpoints:
-- Local model: `http://spark0.tail1f104f.ts.net:41447/v1/chat/completions`
+- Local model: `http://<local_domain_or_ip>:41447/v1/chat/completions`
 - Cerebras: `https://api.cerebras.ai/v1/chat/completions`
 
 ## 3. Start the Server
@@ -56,7 +56,7 @@ Configure Cline with:
 
 ### Connection errors
 - Make sure llama.cpp is running on your DGX Spark
-- Check network connectivity to `spark0.tail1f104f.ts.net`
+- Check network connectivity to `<local_domain_or_ip>`
 - Verify Cerebras API key is valid
 
 ### Tests fail
