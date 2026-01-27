@@ -12,6 +12,47 @@ import importlib.util
 from router import SmartRouter
 from config import get_config
 
+
+def format_response_notification(
+    model_used: str,
+    total_tokens: int,
+    cost: float,
+    config_notifications,
+) -> str:
+    """
+    Format a response notification based on configuration.
+
+    Args:
+        model_used: The model that generated the response (local/cerebras)
+        total_tokens: Total tokens used in the response
+        cost: Cost of the response in USD
+        config_notifications: ResponseNotificationsConfig object
+
+    Returns:
+        Formatted notification string
+    """
+    if not config_notifications.enabled:
+        return ""
+
+    # Determine model display name
+    model_display = model_used.capitalize()
+
+    # Format cost with appropriate precision
+    if cost == 0:
+        cost_str = "0.00"
+    else:
+        cost_str = f"{cost:.4f}" if cost < 0.01 else f"{cost:.2f}"
+
+    # Format the notification using the template
+    notification = config_notifications.template.format(
+        model=model_display,
+        tokens=total_tokens,
+        cost=cost_str,
+    )
+
+    return notification
+
+
 # Import custom statistics module (avoid name conflict with Python's built-in statistics)
 spec = importlib.util.spec_from_file_location(
     "api_statistics",
@@ -212,14 +253,48 @@ async def stream_response(response: Dict[str, Any]) -> AsyncGenerator[str, None]
     This converts a complete response into a stream of SSE chunks.
     """
     try:
+        config = get_config()
         choices = response.get("choices", [])
         usage = response.get("usage", {})
         model = response.get("model", "glm-4.7")
         created = response.get("created", 0)
         response_id = response.get("id", "chatcmpl-unknown")
+        model_used = response.get("model_used", "unknown")
+
+        # Prepare notification if enabled
+        notification = ""
+        if config.response_notifications.enabled:
+            total_tokens = usage.get("total_tokens", 0)
+            
+            # Calculate cost based on model used
+            if model_used == "local":
+                cost = 0.0
+            elif model_used == "cerebras":
+                cost = (total_tokens / 1000) * config.cost_tracking.cerebras_cost_per_1k_tokens
+            else:
+                cost = 0.0
+            
+            notification = format_response_notification(
+                model_used=model_used,
+                total_tokens=total_tokens,
+                cost=cost,
+                config_notifications=config.response_notifications,
+            )
 
         # Send each choice as a chunk
         for i, choice in enumerate(choices):
+            content = choice.get("message", {}).get("content", "")
+            
+            # Apply notification if enabled (respect position setting)
+            if notification:
+                position = config.response_notifications.position
+                if position == "prepend":
+                    content = notification + content
+                elif position == "append":
+                    content = content + notification
+                elif position == "both":
+                    content = notification + content + notification
+            
             chunk = {
                 "id": response_id,
                 "object": "chat.completion.chunk",
@@ -230,7 +305,7 @@ async def stream_response(response: Dict[str, Any]) -> AsyncGenerator[str, None]
                         "index": i,
                         "delta": {
                             "role": "assistant",
-                            "content": choice.get("message", {}).get("content", ""),
+                            "content": content,
                         },
                         "finish_reason": choice.get("finish_reason", "stop"),
                     }
@@ -516,6 +591,42 @@ async def chat_completions(request: Request):
         logger.info(f"Usage: {usage.get('total_tokens', 0)} total tokens")
         logger.debug(f"Original choices: {choices}")
         logger.debug(f"Validated choices: {validated_choices}")
+
+        # Apply response notifications if enabled
+        config = get_config()
+        if config.response_notifications.enabled:
+            total_tokens = cleaned_usage.get("total_tokens", 0)
+            
+            # Calculate cost based on model used
+            if model_used == "local":
+                cost = 0.0
+            elif model_used == "cerebras":
+                cost = (total_tokens / 1000) * config.cost_tracking.cerebras_cost_per_1k_tokens
+            else:
+                cost = 0.0
+            
+            # Format the notification
+            notification = format_response_notification(
+                model_used=model_used,
+                total_tokens=total_tokens,
+                cost=cost,
+                config_notifications=config.response_notifications,
+            )
+            
+            # Apply notification based on position setting
+            if notification:
+                position = config.response_notifications.position
+                for choice in validated_choices:
+                    content = choice.get("message", {}).get("content", "")
+                    
+                    if position == "prepend":
+                        choice["message"]["content"] = notification + "\n" + content
+                    elif position == "append":
+                        choice["message"]["content"] = content + notification
+                    elif position == "both":
+                        choice["message"]["content"] = notification + "\n" + content + "\n" + notification
+                
+                logger.info(f"Applied notification to response (position: {position})")
 
         # Return OpenAI-compatible response
         response_data = {
