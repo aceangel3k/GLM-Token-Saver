@@ -34,8 +34,15 @@ def format_response_notification(
     if not config_notifications.enabled:
         return ""
 
-    # Determine model display name
+    # Determine model display name and emoji
     model_display = model_used.capitalize()
+    
+    # Map models to emojis
+    model_emojis = {
+        "local": "🏠",
+        "cerebras": "🌎",
+    }
+    emoji = model_emojis.get(model_used.lower(), "")
 
     # Format cost with appropriate precision
     if cost == 0:
@@ -45,6 +52,7 @@ def format_response_notification(
 
     # Format the notification using the template
     notification = config_notifications.template.format(
+        emoji=emoji,
         model=model_display,
         tokens=total_tokens,
         cost=cost_str,
@@ -246,96 +254,171 @@ async def list_models():
     }
 
 
-async def stream_response(response: Dict[str, Any]) -> AsyncGenerator[str, None]:
+async def stream_response(
+    messages: List[Dict[str, str]],
+    temperature: float,
+    max_tokens: Optional[int],
+    top_p: Optional[float],
+    frequency_penalty: Optional[float],
+    presence_penalty: Optional[float],
+) -> AsyncGenerator[str, None]:
     """
-    Generate streaming response in OpenAI-compatible SSE format.
-
-    This converts a complete response into a stream of SSE chunks.
+    Generate streaming response in OpenAI-compatible SSE format using real streaming.
     """
+    import time
+    
     try:
         config = get_config()
-        choices = response.get("choices", [])
-        usage = response.get("usage", {})
-        model = response.get("model", "glm-4.7")
-        created = response.get("created", 0)
-        response_id = response.get("id", "chatcmpl-unknown")
-        model_used = response.get("model_used", "unknown")
-
-        # Prepare notification if enabled
-        notification = ""
-        if config.response_notifications.enabled:
-            total_tokens = usage.get("total_tokens", 0)
+        response_id = f"chatcmpl-{int(time.time())}"
+        created = int(time.time())
+        
+        # Determine routing strategy and model BEFORE streaming starts
+        strategy = router.config.routing.strategy
+        # Simple classification to determine model (same logic as router.route_stream)
+        is_complex, _ = router.classifier.classify(messages)
+        
+        if strategy == "always_local":
+            model_used = "local"
+        elif strategy == "always_cerebras":
+            model_used = "cerebras"
+        elif strategy == "smart_routing":
+            model_used = "cerebras" if is_complex else "local"
+        elif strategy in ["smart_speculative", "speculative_decoding"]:
+            model_used = "local"  # Draft comes from local
+        else:
+            model_used = "local"
+        
+        # Track streaming state
+        total_tokens = 0
+        chunk_count = 0
+        
+        # Track if router sent a notification (initialized once, never overwritten)
+        notification_already_sent = False
+        
+        # Route streaming request
+        logger.info(f"=== STREAMING STARTED ===")
+        logger.info(f"Model determined: {model_used}")
+        
+        async for chunk in router.route_stream(
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            top_p=top_p,
+            frequency_penalty=frequency_penalty,
+            presence_penalty=presence_penalty,
+        ):
+            # Check if router already sent a notification (set to True if any chunk had the flag)
+            if chunk.pop("_notification_sent", False):
+                notification_already_sent = True
+                logger.info(f"=== NOTIFICATION CHUNK DETECTED ===")
+                logger.info(f"Notification content: {chunk.get('choices', [{}])[0].get('delta', {}).get('content', '')[:100]}")
             
+            # Track token usage
+            if "usage" in chunk:
+                usage = chunk["usage"]
+                total_tokens = usage.get("total_tokens", total_tokens)
+            
+            # Add routing model info if present
+            if "model_used" in chunk:
+                chunk["routing_model"] = chunk["model_used"]
+                del chunk["model_used"]
+            
+            # Yield the actual chunk
+            chunk["id"] = response_id
+            chunk["created"] = created
+            yield f"data: {json.dumps(chunk)}\n\n"
+            chunk_count += 1
+        
+        # Prepare and send notification if enabled (only after streaming completes)
+        # Skip if router already sent a notification
+        if config.response_notifications.enabled and not notification_already_sent:
             # Calculate cost based on model used
-            if model_used == "local":
-                cost = 0.0
-            elif model_used == "cerebras":
+            cost = 0.0
+            if model_used == "cerebras":
                 cost = (total_tokens / 1000) * config.cost_tracking.cerebras_cost_per_1k_tokens
-            else:
-                cost = 0.0
             
+            # Format notification with correct token count
             notification = format_response_notification(
                 model_used=model_used,
                 total_tokens=total_tokens,
                 cost=cost,
                 config_notifications=config.response_notifications,
             )
-
-        # Send each choice as a chunk
-        for i, choice in enumerate(choices):
-            content = choice.get("message", {}).get("content", "")
             
-            # Apply notification if enabled (respect position setting)
             if notification:
                 position = config.response_notifications.position
-                if position == "prepend":
-                    content = notification + content
-                elif position == "append":
-                    content = content + notification
-                elif position == "both":
-                    content = notification + content + notification
-            
-            chunk = {
-                "id": response_id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": model,
-                "choices": [
-                    {
-                        "index": i,
-                        "delta": {
-                            "role": "assistant",
-                            "content": content,
-                        },
-                        "finish_reason": choice.get("finish_reason", "stop"),
+                
+                # For streaming, only support append position since we can't prepend with unknown token count
+                if position == "append":
+                    # Send the notification as a delta chunk at the end
+                    final_chunk = {
+                        "id": response_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": "glm-4.7",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {
+                                    "content": notification,
+                                },
+                            }
+                        ],
                     }
-                ],
-            }
-            yield f"data: {json.dumps(chunk)}\n\n"
-
-        # Send final usage chunk if usage is available
-        if usage:
+                    yield f"data: {json.dumps(final_chunk)}\n\n"
+                    logger.info(f"Notification sent as final chunk (append): {total_tokens} tokens")
+                elif position == "prepend":
+                    logger.info(f"Notification position 'prepend' not supported for streaming (unknown token count). Use 'append' instead.")
+                elif position == "both":
+                    # Send notification at end (append position for streaming)
+                    final_chunk = {
+                        "id": response_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": "glm-4.7",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {
+                                    "content": notification,
+                                },
+                            }
+                        ],
+                    }
+                    yield f"data: {json.dumps(final_chunk)}\n\n"
+                    logger.info(f"Notification sent as final chunk (both): {total_tokens} tokens")
+        
+        # Send final usage chunk if we have token count
+        if total_tokens > 0:
             usage_chunk = {
                 "id": response_id,
                 "object": "chat.completion.chunk",
                 "created": created,
-                "model": model,
+                "model": "glm-4.7",
                 "choices": [],
                 "usage": {
-                    "prompt_tokens": usage.get("prompt_tokens", 0),
-                    "completion_tokens": usage.get("completion_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0),
+                    "prompt_tokens": 0,  # Not tracked during streaming
+                    "completion_tokens": total_tokens,
+                    "total_tokens": total_tokens,
                 },
             }
             yield f"data: {json.dumps(usage_chunk)}\n\n"
-
+        
         # Send final [DONE] marker
         yield "data: [DONE]\n\n"
+        
+        logger.info(f"=== STREAMING COMPLETE ===")
+        logger.info(f"Total tokens: {total_tokens}")
 
     except Exception as e:
         logger.error(f"Error in stream_response: {e}", exc_info=True)
         # Send error chunk
         error_chunk = {
+            "id": response_id if 'response_id' in locals() else "chatcmpl-error",
+            "object": "chat.completion.chunk",
+            "created": created if 'created' in locals() else int(time.time()),
+            "model": "glm-4.7",
+            "choices": [],
             "error": {"message": str(e), "type": "stream_error", "code": "stream_error"}
         }
         yield f"data: {json.dumps(error_chunk)}\n\n"
@@ -442,21 +525,18 @@ async def chat_completions(request: Request):
         # Check if streaming is requested
         stream = chat_request.stream
 
-        # Route request through smart router
-        response = await router.route(
-            messages=messages,
-            temperature=chat_request.temperature or 0.9,
-            max_tokens=chat_request.max_tokens,
-            top_p=chat_request.top_p,
-            frequency_penalty=chat_request.frequency_penalty,
-            presence_penalty=chat_request.presence_penalty,
-        )
-
         # If streaming is requested, return streaming response
         if stream:
-            logger.info("=== STREAMING RESPONSE ===")
+            logger.info("=== STREAMING REQUESTED ===")
             return StreamingResponse(
-                stream_response(response),
+                stream_response(
+                    messages=messages,
+                    temperature=chat_request.temperature or 0.9,
+                    max_tokens=chat_request.max_tokens,
+                    top_p=chat_request.top_p,
+                    frequency_penalty=chat_request.frequency_penalty,
+                    presence_penalty=chat_request.presence_penalty,
+                ),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
@@ -464,6 +544,16 @@ async def chat_completions(request: Request):
                     "X-Accel-Buffering": "no",
                 },
             )
+
+        # Route request through smart router with override detection (non-streaming)
+        response = await router.route_with_override(
+            messages=messages,
+            temperature=chat_request.temperature or 0.9,
+            max_tokens=chat_request.max_tokens,
+            top_p=chat_request.top_p,
+            frequency_penalty=chat_request.frequency_penalty,
+            presence_penalty=chat_request.presence_penalty,
+        )
 
         # Extract response data
         choices = response.get("choices", [])
@@ -597,19 +687,28 @@ async def chat_completions(request: Request):
         if config.response_notifications.enabled:
             total_tokens = cleaned_usage.get("total_tokens", 0)
             
-            # Calculate cost based on model used
-            if model_used == "local":
-                cost = 0.0
+            # Check if this was a spillover from speculative decoding
+            # If so, we want to show the cerebras model info with the verified tokens
+            display_model = model_used
+            display_tokens = total_tokens
+            display_cost = 0.0
+            
+            if speculative_decoding and speculative_decoding.get("spilled_over", False):
+                # Use cerebras model info for spillover notifications
+                display_model = "cerebras"
+                display_tokens = speculative_decoding.get("verified_tokens", total_tokens)
+                display_cost = (display_tokens / 1000) * config.cost_tracking.cerebras_cost_per_1k_tokens
+                logger.info("Using cerebras model info for spillover notification")
             elif model_used == "cerebras":
-                cost = (total_tokens / 1000) * config.cost_tracking.cerebras_cost_per_1k_tokens
-            else:
-                cost = 0.0
+                display_cost = (total_tokens / 1000) * config.cost_tracking.cerebras_cost_per_1k_tokens
+            elif model_used == "local":
+                display_cost = 0.0
             
             # Format the notification
             notification = format_response_notification(
-                model_used=model_used,
-                total_tokens=total_tokens,
-                cost=cost,
+                model_used=display_model,
+                total_tokens=display_tokens,
+                cost=display_cost,
                 config_notifications=config.response_notifications,
             )
             
@@ -626,7 +725,7 @@ async def chat_completions(request: Request):
                     elif position == "both":
                         choice["message"]["content"] = notification + "\n" + content + "\n" + notification
                 
-                logger.info(f"Applied notification to response (position: {position})")
+                logger.info(f"Applied notification to response (position: {position}, model: {display_model}, tokens: {display_tokens})")
 
         # Return OpenAI-compatible response
         response_data = {
@@ -681,6 +780,115 @@ async def reset_statistics():
     stats = get_stats()
     stats.reset()
     return {"message": "Statistics reset successfully"}
+
+
+@app.get("/admin/config")
+async def get_current_config():
+    """Get current configuration (admin endpoint)."""
+    config = get_config()
+    return {
+        "routing": {
+            "strategy": config.routing.strategy,
+            "simple_task_threshold": config.routing.simple_task_threshold,
+            "complexity_keywords": config.routing.complexity_keywords,
+        },
+        "speculative_decoding": {
+            "enabled": config.speculative_decoding.enabled,
+            "draft_model": config.speculative_decoding.draft_model,
+            "verify_model": config.speculative_decoding.verify_model,
+            "max_draft_tokens": config.speculative_decoding.max_draft_tokens,
+            "min_confidence": config.speculative_decoding.min_confidence,
+            "parallel_enabled": config.speculative_decoding.parallel_enabled,
+            "max_concurrent_drafts": config.speculative_decoding.max_concurrent_drafts,
+            "draft_timeout": config.speculative_decoding.draft_timeout,
+        },
+        "models": {
+            "local": {
+                "enabled": config.models["local"].enabled,
+                "name": config.models["local"].name,
+                "model": config.models["local"].model,
+                "endpoint": config.models["local"].endpoint,
+            },
+            "cerebras": {
+                "enabled": config.models["cerebras"].enabled,
+                "name": config.models["cerebras"].name,
+                "model": config.models["cerebras"].model,
+            },
+        },
+    }
+
+
+@app.post("/admin/config/reload")
+async def reload_configuration():
+    """Reload configuration from config.yaml file (admin endpoint)."""
+    try:
+        # Reload the router configuration (which also reloads the global config)
+        router.reload_config()
+        logger.info("Configuration reloaded successfully")
+        return {
+            "message": "Configuration reloaded successfully",
+            "details": {
+                "routing_strategy": router.config.routing.strategy,
+                "local_enabled": router.config.models["local"].enabled,
+                "cerebras_enabled": router.config.models["cerebras"].enabled,
+                "speculative_decoding_enabled": router.config.speculative_decoding.enabled,
+            }
+        }
+    except Exception as e:
+        logger.error(f"Failed to reload configuration: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": {"message": f"Failed to reload config: {str(e)}"}}
+        )
+
+
+# Cache admin endpoints
+
+@app.get("/admin/cache/stats")
+async def get_cache_stats():
+    """Get cache statistics (admin endpoint)."""
+    return router.cache.get_statistics()
+
+
+@app.get("/admin/cache/entries")
+async def get_cache_entries(limit: int = 100):
+    """Get cache entries (admin endpoint).
+
+    Args:
+        limit: Maximum number of entries to return (default: 100)
+    """
+    return {
+        "entries": router.cache.get_entries(limit=limit),
+        "total": len(router.cache._cache),
+    }
+
+
+@app.post("/admin/cache/clear")
+async def clear_cache():
+    """Clear all cache entries (admin endpoint)."""
+    router.cache.clear()
+    return {"message": "Cache cleared successfully"}
+
+
+@app.post("/admin/cache/invalidate/{model}")
+async def invalidate_cache_model(model: str):
+    """Invalidate all cache entries for a specific model (admin endpoint).
+
+    Args:
+        model: Model name to invalidate (e.g., "local", "cerebras")
+    """
+    router.cache.invalidate_model(model)
+    return {"message": f"Cache entries for model '{model}' invalidated successfully"}
+
+
+@app.post("/admin/cache/cleanup")
+async def cleanup_expired_cache():
+    """Remove all expired entries from the cache (admin endpoint)."""
+    removed = router.cache.cleanup_expired()
+    return {
+        "message": f"Cleaned up {removed} expired cache entries",
+        "removed_count": removed
+    }
 
 
 if __name__ == "__main__":

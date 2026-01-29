@@ -31,8 +31,38 @@ Intelligent classification of task complexity.
 - Adjust token threshold
 - Fine-tune for your workflow
 
-### 3. Speculative Decoding
-Advanced technique to save on API costs.
+### 3. Dynamic Rate-Aware Routing
+Intelligent routing that adapts to rate limits automatically.
+
+**How it works:**
+1. Monitors Cerebras API rate limits in real-time
+2. Automatically shifts requests to local model when approaching limits
+3. Returns to Cerebras when capacity is available
+4. Provides transparent fallback with no service interruption
+
+**Benefits:**
+- Continuous operation without manual intervention
+- Optimized resource utilization
+- Maintains performance under load
+- Automatic rate limit recovery
+
+### 4. Parallel Speculative Decoding
+Advanced technique that generates multiple drafts concurrently for faster response.
+
+**How it works:**
+1. Launches multiple draft requests to local model simultaneously
+2. Selects the best response based on quality metrics
+3. Verifies selected draft with Cerebras only when needed
+4. Falls back to sequential mode if parallel generation fails
+
+**Benefits:**
+- Significantly faster response times
+- Higher quality drafts through multiple attempts
+- Configurable parallel execution limits
+- Graceful degradation to sequential mode
+
+### 5. Speculative Decoding
+Advanced technique to save on API costs (sequential mode).
 
 **How it works:**
 1. Local model generates draft tokens (fast, free)
@@ -124,9 +154,18 @@ Choose the best strategy for your needs.
 
 **Available strategies:**
 - `smart_routing` - Automatic routing based on complexity (default)
+- `smart_speculative` - Smart routing with speculative decoding
 - `speculative_decoding` - Draft from local, verify with Cerebras
+- `parallel_speculative` - Parallel speculative decoding for faster responses
 - `always_local` - Always use local model (free)
 - `always_cerebras` - Always use Cerebras (best quality)
+
+**Parallel Speculative Decoding Configuration:**
+- `parallel_enabled` - Enable/disable parallel execution
+- `max_concurrent_drafts` - Maximum number of concurrent drafts (default: 3)
+- `draft_timeout` - Timeout for draft generation (seconds)
+- `max_draft_tokens` - Maximum tokens per draft
+- `min_confidence` - Minimum similarity threshold for verification
 
 ## Technical Features
 

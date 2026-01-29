@@ -60,6 +60,8 @@ User asks: "Explain quantum computing"
 ## Features
 
 - **Speculative Decoding**: Uses local model for draft generation, verifies with cloud model
+- **Parallel Speculative Decoding**: Launches multiple draft requests concurrently for faster response times
+- **Dynamic Rate-Aware Routing**: Automatically shifts requests to local model when approaching Cerebras rate limits
 - **Smart Routing**: Automatically routes requests to the appropriate model based on task complexity
 - **Cost Savings**: Routes simple tasks to local model (free), complex tasks to Cerebras (when needed)
 - **Rate Limit Handling**: Automatic fallback to local model when Cerebras hits rate limits
@@ -113,9 +115,19 @@ models:
     model: "zai-glm-4.7"
 
 routing:
-  strategy: "smart_routing"  # Options: smart_routing, speculative_decoding, always_local, always_cerebras
+  strategy: "smart_routing"  # Options: smart_routing, smart_speculative, speculative_decoding, parallel_speculative, always_local, always_cerebras
   simple_task_threshold: 1000
   complexity_keywords: ["code", "debug", "architecture", ...]
+
+speculative_decoding:
+  enabled: true
+  draft_model: "local"
+  verify_model: "cerebras"
+  max_draft_tokens: 100      # Max tokens in draft before verification
+  min_confidence: 0.7        # Similarity threshold (0.0-1.0)
+  parallel_enabled: true     # Enable parallel speculative decoding
+  max_concurrent_drafts: 3   # Maximum concurrent drafts
+  draft_timeout: 5           # Timeout for draft generation (seconds)
 ```
 
 ## Running the Server
@@ -264,7 +276,42 @@ speculative_decoding:
   verify_model: "cerebras"
   max_draft_tokens: 100      # Max tokens in draft before verification
   min_confidence: 0.7        # Similarity threshold (0.0-1.0)
+  parallel_enabled: true     # Enable parallel speculative decoding
+  max_concurrent_drafts: 3   # Maximum concurrent drafts
+  draft_timeout: 5           # Timeout for draft generation (seconds)
 ```
+
+### `parallel_speculative`
+- Launches multiple draft requests to local model concurrently
+- Selects the best response based on quality metrics (length, token count)
+- Verifies selected draft with Cerebras only when needed
+- Falls back to sequential mode if parallel generation fails
+- **Benefits:**
+  - Significantly faster response times
+  - Higher quality drafts through multiple attempts
+  - Graceful degradation to sequential mode
+
+**Configuration:**
+```yaml
+speculative_decoding:
+  parallel_enabled: true
+  max_concurrent_drafts: 3   # Number of concurrent drafts
+  draft_timeout: 5           # Timeout per draft (seconds)
+  max_draft_tokens: 100      # Max tokens per draft
+  min_confidence: 0.7        # Similarity threshold for verification
+```
+
+**How it Works:**
+1. Launches N concurrent draft requests to local model
+2. Waits for all drafts to complete or timeout
+3. Selects the best draft based on quality metrics
+4. Verifies selected draft with Cerebras if needed
+5. Uses verified response or falls back to sequential mode
+
+**Tuning Tips:**
+- Increase `max_concurrent_drafts` for better quality (slower)
+- Decrease `draft_timeout` for faster responses (may miss some drafts)
+- Adjust `min_confidence` to control verification strictness
 
 **How to Tune:**
 
@@ -299,6 +346,12 @@ speculative_decoding:
 ### `always_cerebras`
 - Always uses Cerebras
 - Best quality, highest cost
+
+### `smart_speculative`
+- Combines smart routing with speculative decoding
+- Uses speculative decoding for complex tasks
+- Falls back to local model for simple tasks
+- Automatic rate limit handling
 
 ## Task Complexity Classification
 

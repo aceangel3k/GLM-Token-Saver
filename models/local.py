@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, AsyncGenerator
 from .base import BaseModelClient
 import logging
 
@@ -47,3 +47,24 @@ class LocalModelClient(BaseModelClient):
         logger.debug(f"Full response: {response}")
 
         return response
+
+    async def chat_completion_stream(
+        self,
+        messages: list[Dict[str, str]],
+        temperature: float = 0.9,
+        max_tokens: Optional[int] = None,
+        **kwargs,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Send streaming chat completion request to local llama.cpp model."""
+        payload = self._build_payload(messages, temperature, max_tokens, **kwargs)
+
+        logger.info(f"=== LOCAL MODEL STREAMING REQUEST ===")
+        logger.info(f"Model: {self.model_name}")
+        logger.info(f"Endpoint: {self.endpoint}")
+        logger.info(f"Messages: {len(messages)}")
+        logger.info(
+            f"Temperature: {temperature}, Max tokens: {max_tokens or self.max_tokens}"
+        )
+
+        async for chunk in self._make_streaming_request(payload):
+            yield chunk

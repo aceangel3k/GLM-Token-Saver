@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, AsyncGenerator
 import httpx
 import logging
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,17 @@ class BaseModelClient(ABC):
         **kwargs,
     ) -> Dict[str, Any]:
         """Send chat completion request to the model."""
+        pass
+
+    @abstractmethod
+    async def chat_completion_stream(
+        self,
+        messages: list[Dict[str, str]],
+        temperature: float = 0.9,
+        max_tokens: Optional[int] = None,
+        **kwargs,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Send streaming chat completion request to the model."""
         pass
 
     def _get_headers(self) -> Dict[str, str]:
@@ -73,4 +85,46 @@ class BaseModelClient(ABC):
                 raise
             except httpx.RequestError as e:
                 logger.error(f"Request error to {self.model_name}: {e}")
+                raise
+
+    async def _make_streaming_request(
+        self, payload: Dict[str, Any]
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Make streaming HTTP request to the model endpoint."""
+        headers = self._get_headers()
+        payload["stream"] = True
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                logger.info(f"Making streaming HTTP request to: {self.endpoint}")
+                async with client.stream(
+                    "POST", self.endpoint, headers=headers, json=payload
+                ) as response:
+                    response.raise_for_status()
+                    logger.info(f"Streaming HTTP request successful: {response.status_code}")
+                    
+                    async for line in response.aiter_lines():
+                        if not line:
+                            continue
+                        
+                        # SSE format: "data: {...}"
+                        if line.startswith("data: "):
+                            data_str = line[6:]  # Remove "data: " prefix
+                            
+                            # Check for [DONE] marker
+                            if data_str.strip() == "[DONE]":
+                                break
+                            
+                            try:
+                                data = json.loads(data_str)
+                                yield data
+                            except json.JSONDecodeError as e:
+                                logger.warning(f"Failed to parse SSE data: {e}, data: {data_str}")
+                                continue
+                                
+            except httpx.HTTPStatusError as e:
+                logger.error(f"HTTP error from {self.model_name} during streaming: {e}")
+                raise
+            except httpx.RequestError as e:
+                logger.error(f"Request error to {self.model_name} during streaming: {e}")
                 raise
