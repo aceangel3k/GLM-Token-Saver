@@ -272,6 +272,17 @@ async def stream_response(
         response_id = f"chatcmpl-{int(time.time())}"
         created = int(time.time())
         
+        # Estimate prompt tokens from input messages (roughly 4 chars per token)
+        prompt_tokens = 0
+        for msg in messages:
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                prompt_tokens += len(content) // 4 + 1
+            elif isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        prompt_tokens += len(item.get("text", "")) // 4 + 1
+        
         # Determine routing strategy and model BEFORE streaming starts
         strategy = router.config.routing.strategy
         # Simple classification to determine model (same logic as router.route_stream)
@@ -289,7 +300,7 @@ async def stream_response(
             model_used = "local"
         
         # Track streaming state
-        total_tokens = 0
+        completion_tokens = 0
         chunk_count = 0
         
         # Track if router sent a notification (initialized once, never overwritten)
@@ -313,10 +324,10 @@ async def stream_response(
                 logger.info(f"=== NOTIFICATION CHUNK DETECTED ===")
                 logger.info(f"Notification content: {chunk.get('choices', [{}])[0].get('delta', {}).get('content', '')[:100]}")
             
-            # Track token usage
+            # Track completion token usage
             if "usage" in chunk:
                 usage = chunk["usage"]
-                total_tokens = usage.get("total_tokens", total_tokens)
+                completion_tokens = usage.get("completion_tokens", completion_tokens)
             
             # Add routing model info if present
             if "model_used" in chunk:
@@ -334,13 +345,14 @@ async def stream_response(
         if config.response_notifications.enabled and not notification_already_sent:
             # Calculate cost based on model used
             cost = 0.0
+            total_tokens = prompt_tokens + completion_tokens
             if model_used == "cerebras":
                 cost = (total_tokens / 1000) * config.cost_tracking.cerebras_cost_per_1k_tokens
             
             # Format notification with correct token count
             notification = format_response_notification(
                 model_used=model_used,
-                total_tokens=total_tokens,
+                total_tokens=completion_tokens,
                 cost=cost,
                 config_notifications=config.response_notifications,
             )
@@ -366,7 +378,7 @@ async def stream_response(
                         ],
                     }
                     yield f"data: {json.dumps(final_chunk)}\n\n"
-                    logger.info(f"Notification sent as final chunk (append): {total_tokens} tokens")
+                    logger.info(f"Notification sent as final chunk (append): {completion_tokens} tokens")
                 elif position == "prepend":
                     logger.info(f"Notification position 'prepend' not supported for streaming (unknown token count). Use 'append' instead.")
                 elif position == "both":
@@ -386,10 +398,13 @@ async def stream_response(
                         ],
                     }
                     yield f"data: {json.dumps(final_chunk)}\n\n"
-                    logger.info(f"Notification sent as final chunk (both): {total_tokens} tokens")
+                    logger.info(f"Notification sent as final chunk (both): {completion_tokens} tokens")
+        
+        # Calculate total tokens for usage chunk
+        total_tokens = prompt_tokens + completion_tokens
         
         # Send final usage chunk if we have token count
-        if total_tokens > 0:
+        if total_tokens > 0 or prompt_tokens > 0:
             usage_chunk = {
                 "id": response_id,
                 "object": "chat.completion.chunk",
@@ -397,8 +412,8 @@ async def stream_response(
                 "model": "glm-4.7",
                 "choices": [],
                 "usage": {
-                    "prompt_tokens": 0,  # Not tracked during streaming
-                    "completion_tokens": total_tokens,
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
                     "total_tokens": total_tokens,
                 },
             }

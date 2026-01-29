@@ -1066,10 +1066,26 @@ class SmartRouter:
                                         "choices": [{"index": 0, "delta": {"content": to_send}}],
                                     }
             
-            # Stream complete - insert notification appropriately
+            # Stream complete - insert notification only for user-facing responses
             logger.info(f"Local stream complete. Buffering={buffering}, Buffer length: {len(buffer)}")
             config = self.config
-            if config.response_notifications.enabled:
+            
+            # Only add notification to user-facing responses, NOT tool calls
+            # User-facing: plan_mode_respond, ask_followup_question, attempt_completion
+            # Tool calls: write_to_file, replace_in_file, read_file, etc (skip notification)
+            full_lower = full_content.lower()
+            user_facing_tags = ['<plan_mode_respond>', '<ask_followup_question>', '<attempt_completion>']
+            tool_use_tags = ['<write_to_file>', '<replace_in_file>', '<read_file>', '<execute_command>', 
+                            '<search_files>', '<list_files>', '<list_code_definition_names>',
+                            '<browser_action>', '<use_mcp_tool>', '<access_mcp_resource>']
+            
+            is_user_facing = any(tag in full_lower for tag in user_facing_tags)
+            is_tool_use = any(tag in full_lower for tag in tool_use_tags)
+            should_add_notification = is_user_facing and not is_tool_use
+            
+            logger.info(f"Notification check: user_facing={is_user_facing}, tool_use={is_tool_use}, add={should_add_notification}")
+            
+            if config.response_notifications.enabled and should_add_notification:
                 from main import format_response_notification
                 
                 notification = format_response_notification(
@@ -1079,14 +1095,10 @@ class SmartRouter:
                     config_notifications=config.response_notifications,
                 )
                 logger.info(f"Notification generated: {notification[:50] if notification else 'None'}")
-                if notification:
-                    if buffering:
-                        # Found </response> etc - prepend notification before closing tag
-                        buffer = "\n\n" + notification + "\n" + buffer
-                    else:
-                        # No closing tag found (tool calls etc) - append at end
-                        buffer = buffer + "\n\n" + notification
-                    logger.info(f"After insertion (buffering={buffering}): {buffer[:100] if buffer else 'empty'}")
+                if notification and buffering:
+                    # Only prepend if we found content closing tags (user-facing response)
+                    buffer = "\n\n" + notification + "\n" + buffer
+                    logger.info(f"After insertion: {buffer[:100] if buffer else 'empty'}")
             
             # Send the buffered content with notification inserted
             if buffer:
@@ -1271,12 +1283,25 @@ class SmartRouter:
                                         "choices": [{"index": 0, "delta": {"content": to_send}}],
                                     }
             
-            # Stream complete - insert notification appropriately
+            # Stream complete - insert notification only for user-facing responses
             logger.info(f"Cerebras stream complete. Buffering={buffering}, Buffer length: {len(buffer)}")
             config = self.config
             cost = (completion_tokens / 1000) * config.cost_tracking.cerebras_cost_per_1k_tokens
             
-            if config.response_notifications.enabled:
+            # Only add notification to user-facing responses, NOT tool calls
+            full_lower = full_content.lower()
+            user_facing_tags = ['<plan_mode_respond>', '<ask_followup_question>', '<attempt_completion>']
+            tool_use_tags = ['<write_to_file>', '<replace_in_file>', '<read_file>', '<execute_command>', 
+                            '<search_files>', '<list_files>', '<list_code_definition_names>',
+                            '<browser_action>', '<use_mcp_tool>', '<access_mcp_resource>']
+            
+            is_user_facing = any(tag in full_lower for tag in user_facing_tags)
+            is_tool_use = any(tag in full_lower for tag in tool_use_tags)
+            should_add_notification = is_user_facing and not is_tool_use
+            
+            logger.info(f"Notification check: user_facing={is_user_facing}, tool_use={is_tool_use}, add={should_add_notification}")
+            
+            if config.response_notifications.enabled and should_add_notification:
                 from main import format_response_notification
                 
                 notification = format_response_notification(
@@ -1286,14 +1311,10 @@ class SmartRouter:
                     config_notifications=config.response_notifications,
                 )
                 logger.info(f"Notification generated: {notification[:50] if notification else 'None'}")
-                if notification:
-                    if buffering:
-                        # Found </response> etc - prepend notification before closing tag
-                        buffer = "\n\n" + notification + "\n" + buffer
-                    else:
-                        # No closing tag found (tool calls etc) - append at end
-                        buffer = buffer + "\n\n" + notification
-                    logger.info(f"After insertion (buffering={buffering}): {buffer[:100] if buffer else 'empty'}")
+                if notification and buffering:
+                    # Only prepend if we found content closing tags (user-facing response)
+                    buffer = "\n\n" + notification + "\n" + buffer
+                    logger.info(f"After insertion: {buffer[:100] if buffer else 'empty'}")
             
             # Send the buffered content with notification inserted
             if buffer:

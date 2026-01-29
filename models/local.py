@@ -7,10 +7,25 @@ logger = logging.getLogger(__name__)
 
 class LocalModelClient(BaseModelClient):
     """Client for local llama.cpp model."""
+    
+    # Parameters that llama.cpp server doesn't support - filter these out
+    UNSUPPORTED_PARAMS = {
+        'stream_options', 'tools', 'tool_choice', 'response_format',
+        'parallel_tool_calls', 'service_tier', 'logprobs', 'top_logprobs',
+        'n', 'user', 'metadata', 'store', 'reasoning_effort'
+    }
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
         logger.debug(f"Initialized local model client: {self.model_name}")
+    
+    def _filter_kwargs(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """Filter out unsupported parameters for llama.cpp."""
+        filtered = {k: v for k, v in kwargs.items() if k not in self.UNSUPPORTED_PARAMS}
+        removed = set(kwargs.keys()) - set(filtered.keys())
+        if removed:
+            logger.debug(f"Filtered unsupported params for local model: {removed}")
+        return filtered
 
     async def chat_completion(
         self,
@@ -20,6 +35,7 @@ class LocalModelClient(BaseModelClient):
         **kwargs,
     ) -> Dict[str, Any]:
         """Send chat completion request to local llama.cpp model."""
+        kwargs = self._filter_kwargs(kwargs)
         payload = self._build_payload(messages, temperature, max_tokens, **kwargs)
 
         logger.info(f"=== LOCAL MODEL REQUEST ===")
@@ -56,6 +72,7 @@ class LocalModelClient(BaseModelClient):
         **kwargs,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Send streaming chat completion request to local llama.cpp model."""
+        kwargs = self._filter_kwargs(kwargs)
         payload = self._build_payload(messages, temperature, max_tokens, **kwargs)
 
         logger.info(f"=== LOCAL MODEL STREAMING REQUEST ===")
