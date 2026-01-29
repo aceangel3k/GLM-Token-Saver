@@ -2,6 +2,8 @@
 
 A local API server that implements speculative decoding and smart routing for GLM models, helping you save on API costs and credits while maintaining high-quality responses.
 
+[▶ Watch the demo video](https://x.com/aceangel/status/2015122694094967017?s=20)
+
 ## What is Speculative Decoding?
 
 Speculative decoding is an optimization technique that dramatically speeds up LLM inference while maintaining high quality. Here's how it works:
