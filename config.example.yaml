@@ -8,6 +8,7 @@ models:
     context_length: 64000
     max_tokens: 4096
     timeout: 120
+    filter_unsupported_params: true  # Filter parameters not supported by llama.cpp
   
   cerebras:
     enabled: true

@@ -17,10 +17,15 @@ class LocalModelClient(BaseModelClient):
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
-        logger.debug(f"Initialized local model client: {self.model_name}")
+        self.filter_unsupported_params = config.get('filter_unsupported_params', True)
+        logger.debug(f"Initialized local model client: {self.model_name}, filter_unsupported_params: {self.filter_unsupported_params}")
     
     def _filter_kwargs(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
-        """Filter out unsupported parameters for llama.cpp."""
+        """Filter out unsupported parameters for llama.cpp if enabled."""
+        if not self.filter_unsupported_params:
+            # Filtering is disabled, return all kwargs
+            return kwargs
+        
         filtered = {k: v for k, v in kwargs.items() if k not in self.UNSUPPORTED_PARAMS}
         removed = set(kwargs.keys()) - set(filtered.keys())
         if removed:

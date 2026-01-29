@@ -14,6 +14,7 @@ class ModelConfig(BaseModel):
     context_length: int
     max_tokens: int
     timeout: int = 120
+    filter_unsupported_params: bool = True  # Filter unsupported params for llama.cpp
 
 
 class RoutingConfig(BaseModel):
