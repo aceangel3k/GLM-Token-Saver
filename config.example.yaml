@@ -21,7 +21,13 @@ models:
     timeout: 120
 
 routing:
-  strategy: "speculative_decoding"  # Options: smart_routing, speculative_decoding, always_local, always_cerebras
+  strategy: "adaptive_cerebras"  # Options: smart_routing, smart_speculative, speculative_decoding, adaptive_cerebras, always_local, always_cerebras
+    # smart_routing: Use smart routing only (local for simple, cerebras for complex)
+    # smart_speculative: Smart routing + speculative decoding for complex tasks
+    # speculative_decoding: Always use speculative decoding (draft from local, verify with cerebras)
+    # adaptive_cerebras: Always use cerebras until rate limits approached, then switch to local for cooldown
+    # always_local: Always use local model
+    # always_cerebras: Always use cerebras model
   simple_task_threshold: 1000  # tokens
   complexity_keywords:
     - "code"
@@ -87,3 +93,8 @@ rate_limit:
   # Fallback thresholds (percentage of limits to trigger automatic fallback to local)
   request_fallback_threshold: 0.8  # At 80% of request limit, start using local
   token_fallback_threshold: 0.85  # At 85% of token limit, start using local
+
+adaptive_cerebras:
+  enabled: true  # Enable adaptive cerebras strategy (respects rate limit headers)
+  cooldown_seconds: 60  # How long to use local after hitting rate limits (seconds)
+  threshold_percent: 20.0  # Switch to local when tokens remaining < threshold% (e.g., 20%)

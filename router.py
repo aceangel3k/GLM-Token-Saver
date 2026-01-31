@@ -2,6 +2,7 @@ from typing import Dict, Any, Optional, Tuple, Callable, AsyncGenerator
 import logging
 import asyncio
 import re
+import time
 from config import get_config
 from models import LocalModelClient, CerebrasModelClient
 from rate_limiter import RateLimiter
@@ -290,6 +291,11 @@ class SmartRouter:
                 messages, temperature, max_tokens, **kwargs
             )
 
+        elif strategy == "adaptive_cerebras":
+            response = await self._adaptive_cerebras(
+                messages, temperature, max_tokens, **kwargs
+            )
+
         else:
             logger.warning(
                 f"Unknown strategy: {strategy}, falling back to smart_routing"
@@ -381,6 +387,13 @@ class SmartRouter:
         elif strategy == "speculative_decoding":
             # For speculative_decoding, fall back to local streaming with background verification
             async for chunk in self._speculative_decoding_stream(
+                messages, temperature, max_tokens, **kwargs
+            ):
+                yield chunk
+            return
+
+        elif strategy == "adaptive_cerebras":
+            async for chunk in self._adaptive_cerebras_stream(
                 messages, temperature, max_tokens, **kwargs
             ):
                 yield chunk
@@ -1137,21 +1150,72 @@ class SmartRouter:
             stats.record_error("local")
             raise
 
-    async def _use_cerebras(
+    async def _adaptive_cerebras(
         self,
         messages: list[Dict[str, str]],
         temperature: float,
         max_tokens: Optional[int],
-        bypass_rate_limit: bool = False,
         **kwargs,
     ) -> Dict[str, Any]:
-        """Use Cerebras model."""
-        # Check rate limits unless bypassing
-        if not bypass_rate_limit:
-            should_use, reason = self.rate_limiter.should_use_cerebras()
-            if not should_use:
-                logger.info(f"Rate limit check: {reason} - skipping Cerebras")
-                raise RateLimitError(reason)
+        """
+        Adaptive Cerebras strategy:
+        - Always use Cerebras by default
+        - Check API rate limit headers
+        - Switch to local when approaching limit (e.g., <20% tokens remaining)
+        - Use local for cooldown period (default: 60 seconds)
+        - Return to Cerebras after cooldown
+        
+        Respects headers:
+        - x-ratelimit-limit-tokens-minute
+        - x-ratelimit-remaining-tokens-minute
+        - x-ratelimit-reset-tokens-minute
+        """
+        config = self.config.adaptive_cerebras
+        cooldown_seconds = config.cooldown_seconds
+        
+        # Get current rate limits from Cerebras client
+        rate_limits = self.cerebras_client.get_rate_limits()
+        
+        # Check if we should use local (cooldown period)
+        now = time.time()
+        last_switch_time = getattr(self, '_adaptive_last_switch_time', 0)
+        
+        if now - last_switch_time < cooldown_seconds:
+            logger.info(f"=== ADAPTIVE CEREBRAS (COOLDOWN) ===")
+            logger.info(f"Using local for cooldown ({cooldown_seconds}s remaining)")
+            logger.info(f"Cerebras tokens remaining: {rate_limits.remaining_tokens_minute}")
+            
+            # Use local for cooldown
+            response = await self._use_local(
+                messages, temperature, max_tokens, **kwargs
+            )
+            
+            # Update switch time
+            self._adaptive_last_switch_time = now
+            
+            return response
+        
+        # Check if we should switch to local due to rate limits
+        should_use_local, reason = rate_limits.is_near_limit(threshold_percent=config.threshold_percent)
+        
+        if should_use_local:
+            logger.info(f"=== ADAPTIVE CEREBRAS (SWITCH TO LOCAL) ===")
+            logger.info(f"Reason: {reason}")
+            logger.info(f"Cerebras tokens remaining: {rate_limits.remaining_tokens_minute}")
+            
+            # Use local for cooldown period
+            response = await self._use_local(
+                messages, temperature, max_tokens, **kwargs
+            )
+            
+            # Update switch time
+            self._adaptive_last_switch_time = now
+            
+            return response
+        
+        # Rate limits are safe, use Cerebras
+        logger.info(f"=== ADAPTIVE CEREBRAS (USE CEREBRAS) ===")
+        logger.info(f"Cerebras tokens remaining: {rate_limits.remaining_tokens_minute}")
         
         try:
             response = await self.cerebras_client.chat_completion(
@@ -1167,28 +1231,11 @@ class SmartRouter:
             self.rate_limiter.record_request(tokens_used)
             
             return response
-        except RateLimitError:
-            # Re-raise rate limit errors to allow fallback
-            raise
         except Exception as e:
-            error_str = str(e)
+            logger.error(f"Cerebras model failed: {e}")
             stats = self.get_stats()
-            # Check if it's a rate limit error (429)
-            if "429" in error_str or "Too Many Requests" in error_str:
-                self.rate_limit_hits += 1
-                self.last_rate_limit_time = None
-                self.rate_limiter.record_rate_limit_hit()
-                stats.record_rate_limit()
-                stats.record_error("cerebras")
-                logger.warning(
-                    f"Cerebras rate limit hit (count: {self.rate_limit_hits}): {e}"
-                )
-                # Re-raise to allow fallback to local model
-                raise
-            else:
-                stats.record_error("cerebras")
-                logger.error(f"Cerebras model failed: {e}")
-                raise
+            stats.record_error("cerebras")
+            raise
 
     async def _use_cerebras_stream(
         self,
@@ -1366,6 +1413,84 @@ class SmartRouter:
                 stats.record_error("cerebras")
                 logger.error(f"Cerebras model streaming failed: {e}")
                 raise
+    
+    async def _adaptive_cerebras_stream(
+        self,
+        messages: list[Dict[str, str]],
+        temperature: float,
+        max_tokens: Optional[int],
+        **kwargs,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Adaptive Cerebras streaming:
+        - Always stream from Cerebras by default
+        - Monitor rate limit headers
+        - Switch to local when approaching limit
+        - Use local for cooldown period
+        - Return to Cerebras after cooldown
+        
+        Yields:
+            Streaming chunks from selected model
+        """
+        config = self.config.adaptive_cerebras
+        cooldown_seconds = config.cooldown_seconds
+        
+        # Get current rate limits from Cerebras client
+        rate_limits = self.cerebras_client.get_rate_limits()
+        
+        # Check if we should use local (cooldown period)
+        now = time.time()
+        last_switch_time = getattr(self, '_adaptive_last_switch_time', 0)
+        
+        if now - last_switch_time < cooldown_seconds:
+            logger.info(f"=== ADAPTIVE CEREBRAS (COOLDOWN) ===")
+            logger.info(f"Using local for cooldown ({cooldown_seconds}s remaining)")
+            logger.info(f"Cerebras tokens remaining: {rate_limits.remaining_tokens_minute}")
+            
+            # Use local for cooldown
+            async for chunk in self._use_local_stream(
+                messages, temperature, max_tokens, **kwargs
+            ):
+                yield chunk
+            
+            # Update switch time
+            self._adaptive_last_switch_time = now
+            return
+        
+        # Check if we should switch to local due to rate limits
+        should_use_local, reason = rate_limits.is_near_limit(threshold_percent=config.threshold_percent)
+        
+        if should_use_local:
+            logger.info(f"=== ADAPTIVE CEREBRAS (SWITCH TO LOCAL) ===")
+            logger.info(f"Reason: {reason}")
+            logger.info(f"Cerebras tokens remaining: {rate_limits.remaining_tokens_minute}")
+            
+            # Use local for cooldown period
+            async for chunk in self._use_local_stream(
+                messages, temperature, max_tokens, **kwargs
+            ):
+                yield chunk
+            
+            # Update switch time
+            self._adaptive_last_switch_time = now
+            return
+        
+        # Rate limits are safe, use Cerebras
+        logger.info(f"=== ADAPTIVE CEREBRAS (USE CEREBRAS) ===")
+        logger.info(f"Cerebras tokens remaining: {rate_limits.remaining_tokens_minute}")
+        
+        try:
+            async for chunk in self._use_cerebras_stream(
+                messages, temperature, max_tokens, **kwargs
+            ):
+                yield chunk
+        except Exception as e:
+            logger.error(f"Cerebras model streaming failed: {e}")
+            # Fall back to local
+            async for chunk in self._use_local_stream(
+                messages, temperature, max_tokens, **kwargs
+            ):
+                yield chunk
 
     def _extract_content(self, response: Dict[str, Any]) -> str:
         """Extract content from response."""

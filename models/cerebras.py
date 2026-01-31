@@ -1,5 +1,6 @@
 from typing import Dict, Any, Optional, AsyncGenerator
 from .base import BaseModelClient
+from .rate_limits import CerebrasRateLimits
 import logging
 
 logger = logging.getLogger(__name__)
@@ -10,6 +11,7 @@ class CerebrasModelClient(BaseModelClient):
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
+        self.rate_limits = CerebrasRateLimits()
         logger.debug(f"Initialized Cerebras model client: {self.model_name}")
 
     async def chat_completion(
@@ -24,6 +26,9 @@ class CerebrasModelClient(BaseModelClient):
 
         logger.debug(f"Sending request to Cerebras model: {self.model_name}")
         response = await self._make_request(payload)
+
+        # Update rate limits from response headers
+        self.rate_limits.update_from_headers(self.get_last_response_headers())
 
         # Extract token usage
         usage = response.get("usage", {})
@@ -63,3 +68,7 @@ class CerebrasModelClient(BaseModelClient):
         headers = super()._get_headers()
         # Add any Cerebras-specific headers if needed
         return headers
+    
+    def get_rate_limits(self) -> CerebrasRateLimits:
+        """Get the current rate limit information."""
+        return self.rate_limits

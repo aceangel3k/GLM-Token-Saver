@@ -17,6 +17,7 @@ class BaseModelClient(ABC):
         self.model_name = config["model"]
         self.max_tokens = config.get("max_tokens", 4096)
         self.timeout = config.get("timeout", 120)
+        self._last_response_headers: Dict[str, str] = {}
 
     @abstractmethod
     async def chat_completion(
@@ -76,6 +77,8 @@ class BaseModelClient(ABC):
                 )
                 response.raise_for_status()
                 logger.info(f"HTTP request successful: {response.status_code}")
+                # Store response headers for rate limit tracking
+                self._last_response_headers = dict(response.headers)
                 return response.json()
             except httpx.HTTPStatusError as e:
                 logger.error(f"HTTP error from {self.model_name}: {e}")
@@ -102,7 +105,8 @@ class BaseModelClient(ABC):
                 ) as response:
                     response.raise_for_status()
                     logger.info(f"Streaming HTTP request successful: {response.status_code}")
-                    
+                    # Store response headers for rate limit tracking
+                    self._last_response_headers = dict(response.headers)
                     async for line in response.aiter_lines():
                         if not line:
                             continue
@@ -128,3 +132,7 @@ class BaseModelClient(ABC):
             except httpx.RequestError as e:
                 logger.error(f"Request error to {self.model_name} during streaming: {e}")
                 raise
+    
+    def get_last_response_headers(self) -> Dict[str, str]:
+        """Get headers from the last API response."""
+        return self._last_response_headers.copy()

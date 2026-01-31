@@ -84,6 +84,12 @@ class CacheConfig(BaseModel):
     cache_by_max_tokens: bool = False
 
 
+class AdaptiveCerebrasConfig(BaseModel):
+    enabled: bool = True
+    cooldown_seconds: int = 60  # How long to use local after hitting rate limits
+    threshold_percent: float = 20.0  # Switch to local when tokens remaining < threshold%
+
+
 class Config(BaseModel):
     models: Dict[str, ModelConfig]
     routing: RoutingConfig
@@ -96,6 +102,9 @@ class Config(BaseModel):
     )
     rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
+    adaptive_cerebras: AdaptiveCerebrasConfig = Field(
+        default_factory=AdaptiveCerebrasConfig
+    )
 
 
 def load_config(config_path: str = "config.yaml") -> Config:

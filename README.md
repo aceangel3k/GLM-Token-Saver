@@ -65,6 +65,7 @@ User asks: "Explain quantum computing"
 - **Parallel Speculative Decoding**: Launches multiple draft requests concurrently for faster response times
 - **Dynamic Rate-Aware Routing**: Automatically shifts requests to local model when approaching Cerebras rate limits
 - **Smart Routing**: Automatically routes requests to the appropriate model based on task complexity
+- **Adaptive Cerebras Routing**: Maximizes Cerebras usage while automatically respecting rate limits
 - **Cost Savings**: Routes simple tasks to local model (free), complex tasks to Cerebras (when needed)
 - **Rate Limit Handling**: Automatic fallback to local model when Cerebras hits rate limits
 - **OpenAI-Compatible**: Works with any OpenAI-compatible client, including Cline
@@ -117,9 +118,12 @@ models:
     model: "zai-glm-4.7"
 
 routing:
-  strategy: "smart_routing"  # Options: smart_routing, smart_speculative, speculative_decoding, parallel_speculative, always_local, always_cerebras
+  strategy: "smart_routing"  # Options: smart_routing, smart_speculative, speculative_decoding, parallel_speculative, adaptive_cerebras, always_local, always_cerebras
   simple_task_threshold: 1000
   complexity_keywords: ["code", "debug", "architecture", ...]
+  adaptive_cerebras:
+    cool_down_duration: 60  # seconds
+    rate_limit_threshold: 0.2  # 20% remaining
 
 speculative_decoding:
   enabled: true
@@ -355,6 +359,100 @@ speculative_decoding:
 - Falls back to local model for simple tasks
 - Automatic rate limit handling
 
+### `adaptive_cerebras`
+An intelligent routing strategy that maximizes Cerebras API usage while automatically respecting rate limits. It seamlessly switches between Cerebras and local inference based on real-time rate limit information from the API.
+
+**How It Works:**
+
+1. **Primary Mode: Cerebras** - By default, all requests are routed to Cerebras for best quality and fastest response times
+
+2. **Rate Limit Monitoring** - Monitors rate limit headers from Cerebras API:
+   - `x-ratelimit-limit-requests-day` - Maximum requests per day
+   - `x-ratelimit-limit-tokens-minute` - Maximum tokens per minute
+   - `x-ratelimit-remaining-requests-day` - Requests remaining today
+   - `x-ratelimit-remaining-tokens-minute` - Tokens remaining this minute
+   - `x-ratelimit-reset-requests-day` - Seconds until daily reset
+   - `x-ratelimit-reset-tokens-minute` - Seconds until minute reset
+
+3. **Automatic Fallback** - When remaining tokens or requests drop below threshold (default: 20%):
+   - Switches to local inference
+   - Logs the reason for fallback
+   - Waits for cool-down period (default: 60 seconds)
+   - Checks if rate limits have reset
+
+4. **Automatic Recovery** - After cool-down period:
+   - Checks if new rate limit data shows capacity is available
+   - If available, switches back to Cerebras
+   - If still near limits, continues using local model
+
+**Configuration:**
+```yaml
+routing:
+  strategy: "adaptive_cerebras"
+  adaptive_cerebras:
+    cool_down_duration: 60  # seconds
+    rate_limit_threshold: 0.2  # 20% remaining
+```
+
+**Configuration Options:**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `cool_down_duration` | int | 60 | How long to wait on local model before checking Cerebras again (seconds) |
+| `rate_limit_threshold` | float | 0.2 | Percentage threshold to trigger fallback (0.0-1.0) |
+
+**Example Configurations:**
+
+**Conservative (avoid rate limits entirely):**
+```yaml
+routing:
+  strategy: "adaptive_cerebras"
+  adaptive_cerebras:
+    cool_down_duration: 60
+    rate_limit_threshold: 0.3  # 30% remaining
+```
+
+**Aggressive (use Cerebras until very close to limit):**
+```yaml
+routing:
+  strategy: "adaptive_cerebras"
+  adaptive_cerebras:
+    cool_down_duration: 30
+    rate_limit_threshold: 0.1  # 10% remaining
+```
+
+**Quick Recovery (check back frequently):**
+```yaml
+routing:
+  strategy: "adaptive_cerebras"
+  adaptive_cerebras:
+    cool_down_duration: 15  # Check every 15 seconds
+    rate_limit_threshold: 0.2
+```
+
+**Benefits:**
+
+- **Maximum Cost Efficiency**: Uses Cerebras whenever possible for best quality, automatically avoids rate limit errors, no wasted API calls
+- **Continuous Operation**: Seamless fallback to local model, no service interruption for users, automatic recovery when capacity returns
+- **No Manual Monitoring**: Automatically tracks rate limits from API headers, no need to manually monitor usage, self-managing system
+- **Optimal Resource Utilization**: Maximizes Cerebras usage within limits, minimizes local fallback usage (only when necessary), balances quality and availability
+
+**Use Cases:**
+
+- **High-Volume Production**: Continuous operation under heavy load, automatic handling of burst traffic, maintains service availability
+- **Shared API Keys**: Multiple applications sharing one API key, automatic load balancing across rate limits, prevents one app from consuming all quota
+- **Cost-Conscious Operations**: Avoids wasted API calls, maximizes value from Cerebras subscription, automatic cost optimization
+- **Development & Testing**: Test with real Cerebras responses, automatic fallback if limits hit during testing, no need to switch strategies manually
+
+**Comparison with Other Strategies:**
+
+| Strategy | Cerebras Usage | Rate Limit Handling | Cost | Quality |
+|----------|---------------|---------------------|------|---------|
+| `adaptive_cerebras` | Maximum | Automatic fallback | Optimal | Best |
+| `always_cerebras` | 100% | Manual (fails on limit) | Highest | Best |
+| `smart_routing` | Variable | Basic error handling | Low | Variable |
+| `always_local` | 0% | N/A | Free | Lower |
+
 ## Task Complexity Classification
 
 Tasks are classified as complex if they:
@@ -469,6 +567,30 @@ Monitor your Cerebras API usage:
 - Cerebras is slower but more capable
 - Adjust `simple_task_threshold` to balance speed vs. quality
 
+### Adaptive Cerebras Issues
+
+**Issue: Always using local model**
+- **Possible causes**: Rate limit threshold too high, cool-down duration too long, rate limit headers not arriving
+- **Solutions**:
+  - Lower `rate_limit_threshold` in config
+  - Reduce `cool_down_duration`
+  - Check logs for rate limit info
+  - Verify Cerebras API responses include headers
+
+**Issue: Frequent switching between models**
+- **Possible causes**: Rate limit threshold too close to current usage, cool-down duration too short
+- **Solutions**:
+  - Increase `cool_down_duration` to 60+ seconds
+  - Adjust `rate_limit_threshold` to have buffer
+  - Check logs for switching reasons
+
+**Issue: Rate limit errors still occur**
+- **Possible causes**: Threshold too low (triggering too late), burst traffic depleting limits between checks
+- **Solutions**:
+  - Increase `rate_limit_threshold` (be more conservative)
+  - Reduce `cool_down_duration` (check more frequently)
+  - Consider additional rate limiting at application level
+
 ## Testing Speculative Decoding
 
 Run the test script to verify speculative decoding is working:
@@ -496,6 +618,22 @@ Test 2: SUCCESS
   Spilled over: True
   Similarity: 0.45
 ```
+
+## Testing Adaptive Cerebras Strategy
+
+Run the adaptive cerebras test script to verify the strategy is working correctly:
+
+```bash
+python test_adaptive_cerebras.py
+```
+
+Tests cover:
+- Rate limit header parsing
+- Near-limit detection
+- Percentage calculations
+- Reset time calculations
+- Edge cases
+- Integration scenarios
 
 ## Statistics Module
 

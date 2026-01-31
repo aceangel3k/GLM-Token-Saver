@@ -157,8 +157,20 @@ Choose the best strategy for your needs.
 - `smart_speculative` - Smart routing with speculative decoding
 - `speculative_decoding` - Draft from local, verify with Cerebras
 - `parallel_speculative` - Parallel speculative decoding for faster responses
+- `adaptive_cerebras` - Use Cerebras with automatic rate limit awareness and fallback
 - `always_local` - Always use local model (free)
 - `always_cerebras` - Always use Cerebras (best quality)
+
+**Adaptive Cerebras Configuration:**
+- `cool_down_duration` - How long to wait on local model before checking Cerebras again (default: 60 seconds)
+- `rate_limit_threshold` - Percentage threshold to trigger fallback (default: 0.2 = 20% remaining)
+- Tracks rate limit headers from Cerebras API:
+  - `x-ratelimit-limit-requests-day` - Maximum requests per day
+  - `x-ratelimit-limit-tokens-minute` - Maximum tokens per minute
+  - `x-ratelimit-remaining-requests-day` - Requests remaining today
+  - `x-ratelimit-remaining-tokens-minute` - Tokens remaining this minute
+  - `x-ratelimit-reset-requests-day` - Seconds until daily reset
+  - `x-ratelimit-reset-tokens-minute` - Seconds until minute reset
 
 **Parallel Speculative Decoding Configuration:**
 - `parallel_enabled` - Enable/disable parallel execution
